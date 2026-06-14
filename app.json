@@ -23,7 +23,13 @@
     },
     "plugins": [
       "expo-asset",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Swoosh to access your photos so you can review and declutter them."
+        }
+      ]
     ]
   }
 }

@@ -7,7 +7,7 @@ import type { RootStackParamList } from '../App';
 type Props = NativeStackScreenProps<RootStackParamList, 'Summary'>;
 
 export default function SummaryScreen({ route, navigation }: Props) {
-  const { kept, deleted } = route.params;
+  const { kept, deleted, deletedAssets } = route.params;
   const total = kept + deleted;
   const insets = useSafeAreaInsets();
 
@@ -41,9 +41,17 @@ export default function SummaryScreen({ route, navigation }: Props) {
 
         <View style={styles.buttons}>
           <Pressable
-            style={({ pressed }) => [styles.primaryBtn, pressed && styles.primaryBtnPressed]}
+            style={({ pressed }) => [
+              styles.primaryBtn,
+              deleted === 0 && styles.primaryBtnDisabled,
+              pressed && deleted > 0 && styles.primaryBtnPressed,
+            ]}
+            disabled={deleted === 0}
+            onPress={() => navigation.navigate('DeletionReview', { assets: deletedAssets })}
           >
-            <Text style={styles.primaryBtnText}>Review deletions</Text>
+            <Text style={[styles.primaryBtnText, deleted === 0 && styles.primaryBtnTextDisabled]}>
+              Review deletions
+            </Text>
           </Pressable>
           <Pressable
             style={({ pressed }) => [styles.ghostBtn, pressed && { opacity: 0.5 }]}
@@ -129,6 +137,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  primaryBtnDisabled: {
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
   primaryBtnPressed: {
     backgroundColor: 'rgba(255,255,255,0.88)',
   },
@@ -136,6 +147,9 @@ const styles = StyleSheet.create({
     color: '#0a0a0a',
     fontSize: 17,
     fontWeight: '600',
+  },
+  primaryBtnTextDisabled: {
+    color: 'rgba(255,255,255,0.3)',
   },
   ghostBtn: {
     height: 56,
