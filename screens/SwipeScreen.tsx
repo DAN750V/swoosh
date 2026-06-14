@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -21,9 +21,6 @@ const { width: W } = Dimensions.get('window');
 const SWIPE_THRESHOLD = W * 0.28;
 const REVIEW_ITEM_SIZE = Math.floor((W - 112 - 8) / 3);
 
-// Distinct colors used in test mode instead of real photos.
-// Stored in the fake asset's `uri` field so all existing rendering paths
-// can reference it without a separate data structure.
 const PLACEHOLDER_COLORS = [
   '#C0392B', '#2980B9', '#27AE60', '#8E44AD',
   '#E67E22', '#16A085', '#D35400', '#2C3E50',
@@ -31,8 +28,153 @@ const PLACEHOLDER_COLORS = [
 ];
 
 type Decision = { asset: MediaLibrary.AssetInfo; action: 'keep' | 'delete' };
-
 type Props = NativeStackScreenProps<RootStackParamList, 'Swipe'>;
+
+type BottomCardProps = { asset: MediaLibrary.AssetInfo; testMode: boolean };
+
+function BottomCard({ asset, testMode }: BottomCardProps) {
+  // Hold a display asset that lags one rAF behind prop changes.
+  // When topIndex increments, the new SwipeCard mounts (showing assets[N+1]
+  // from cache) while we still display assets[N+1] here — identical content,
+  // no gap. The rAF then quietly updates us to assets[N+2] while we're hidden
+  // behind the SwipeCard.
+  const [displayAsset, setDisplayAsset] = useState(asset);
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => setDisplayAsset(asset));
+    return () => cancelAnimationFrame(raf);
+  }, [asset.id]);
+
+  return (
+    <View style={[StyleSheet.absoluteFill, styles.card]}>
+      {testMode
+        ? <View style={[StyleSheet.absoluteFill, { backgroundColor: displayAsset.uri }]} />
+        : <Image source={{ uri: displayAsset.localUri ?? displayAsset.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+      }
+    </View>
+  );
+}
+
+// ─── SwipeCard ────────────────────────────────────────────────────────────────
+//
+// Owns its own pan and PanResponder. The parent mounts a fresh instance for
+// every card by setting key={topIndex}. When a swipe is committed:
+//   1. The fly-out animation completes (card is off-screen at ±W*1.5)
+//   2. onSwipeComplete fires → parent increments topIndex
+//   3. React UNMOUNTS this component at its off-screen position
+//   4. A new SwipeCard mounts with a fresh pan at {x:0, y:0}
+//
+// The departing card is never repositioned to zero — it ceases to exist at
+// its off-screen location, making ghost frames structurally impossible.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
+type SwipeCardProps = {
+  asset: MediaLibrary.AssetInfo;
+  testMode: boolean;
+  isPausedRef: React.MutableRefObject<boolean>;
+  onSwipeComplete: (dir: 'keep' | 'delete') => void;
+};
+
+function SwipeCard({ asset, testMode, isPausedRef, onSwipeComplete }: SwipeCardProps) {
+  const pan = useRef(new Animated.ValueXY()).current;
+  const departingOpacity = useRef(new Animated.Value(1)).current;
+  const isAnimatingRef = useRef(false);
+
+  // Ref so the PanResponder closure never captures a stale callback.
+  const onCompleteRef = useRef(onSwipeComplete);
+  onCompleteRef.current = onSwipeComplete;
+
+  const rotateZ = pan.x.interpolate({
+    inputRange: [-W / 2, 0, W / 2],
+    outputRange: ['-10deg', '0deg', '10deg'],
+    extrapolate: 'clamp',
+  });
+  const deleteOpacity = pan.x.interpolate({
+    inputRange: [-W * 0.35, 0],
+    outputRange: [1, 0],
+    extrapolate: 'clamp',
+  });
+  const keepOpacity = pan.x.interpolate({
+    inputRange: [0, W * 0.35],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => !isAnimatingRef.current && !isPausedRef.current,
+      onMoveShouldSetPanResponder: () => !isAnimatingRef.current && !isPausedRef.current,
+      onPanResponderMove: (_, g) => {
+        pan.setValue({ x: g.dx, y: g.dy * 0.15 });
+      },
+      onPanResponderRelease: (_, g) => {
+        if (Math.abs(g.dx) > SWIPE_THRESHOLD) {
+          const dir: 'keep' | 'delete' = g.dx > 0 ? 'keep' : 'delete';
+          const toX = g.dx > 0 ? W * 1.5 : -W * 1.5;
+          isAnimatingRef.current = true;
+          departingOpacity.setValue(0);
+
+          Animated.timing(pan, {
+            toValue: { x: toX, y: g.dy * 0.15 },
+            duration: 220,
+            useNativeDriver: false,
+          }).start(({ finished }) => {
+            if (finished) {
+              // Card is now off-screen. Signal the parent; it will increment
+              // topIndex which unmounts this component at its current position.
+              // pan is intentionally NOT reset — there is no position zero to
+              // flash back to before unmount.
+              onCompleteRef.current(dir);
+            } else {
+              isAnimatingRef.current = false;
+            }
+          });
+        } else {
+          Animated.spring(pan, {
+            toValue: { x: 0, y: 0 },
+            friction: 7,
+            tension: 80,
+            useNativeDriver: false,
+          }).start(({ finished }) => {
+            if (finished) isAnimatingRef.current = false;
+          });
+        }
+      },
+    })
+  ).current;
+
+  return (
+    <Animated.View
+      style={[
+        StyleSheet.absoluteFill,
+        styles.card,
+        {
+          opacity: departingOpacity,
+          transform: [
+            { translateX: pan.x },
+            { translateY: pan.y },
+            { rotate: rotateZ },
+          ],
+        },
+      ]}
+      {...panResponder.panHandlers}
+    >
+      {testMode
+        ? <View style={[StyleSheet.absoluteFill, { backgroundColor: asset.uri }]} />
+        : <Image source={{ uri: asset.localUri ?? asset.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+      }
+      <Animated.View style={[StyleSheet.absoluteFill, styles.deleteOverlay, { opacity: deleteOpacity }]}>
+        <Ionicons name="trash" size={68} color="rgba(255,75,75,0.95)" />
+      </Animated.View>
+      <Animated.View style={[StyleSheet.absoluteFill, styles.keepOverlay, { opacity: keepOpacity }]}>
+        <Ionicons name="checkmark-circle" size={68} color="rgba(50,210,105,0.95)" />
+      </Animated.View>
+    </Animated.View>
+  );
+}
+
+// ─── SwipeScreen ──────────────────────────────────────────────────────────────
 
 export default function SwipeScreen({ route, navigation }: Props) {
   const { dailyLimit } = route.params;
@@ -43,12 +185,10 @@ export default function SwipeScreen({ route, navigation }: Props) {
   const [loading, setLoading] = useState(true);
   const [isPaused, setIsPaused] = useState(false);
   const [decisions, setDecisions] = useState<Decision[]>([]);
-  const [snap, setSnap] = useState({ index: 0, kept: 0, deleted: 0 });
-  // Long-press ⋯ to toggle. Replaces real photos with instant colored rectangles
-  // so animation behaviour can be compared without image-loading latency.
+  const [session, setSession] = useState({ topIndex: 0, kept: 0, deleted: 0 });
   const [testMode, setTestMode] = useState(false);
 
-  // Counters in refs so panResponder callbacks never see stale closures
+  // Refs for values read inside callbacks — avoids stale-closure bugs.
   const keptRef = useRef(0);
   const deletedRef = useRef(0);
   const indexRef = useRef(0);
@@ -58,156 +198,10 @@ export default function SwipeScreen({ route, navigation }: Props) {
   assetsRef.current = assets;
   const decisionsRef = useRef<Decision[]>([]);
   decisionsRef.current = decisions;
-  const isAnimatingRef = useRef(false);
   const isPausedRef = useRef(false);
   isPausedRef.current = isPaused;
 
-  // ── Two-card animation system ─────────────────────────────────────────────
-  //
-  // isDepartingAnim toggles between 0 (card at rest) and 1 (card in flight).
-  // effectivePanX/Y = multiply(isDepartingAnim, pan.x/y), so when
-  // isDepartingAnim=0 the transforms are mathematically zero no matter where
-  // pan is sitting — pan never needs to reset while a card is visible.
-  //
-  // Flow:
-  //   onPanResponderGrant  → pan.setValue(0,0) + isDepartingAnim.setValue(1)
-  //   swipe animation end  → setSnap(newIndex) + pendingDepartReset=true
-  //   useLayoutEffect      → isDepartingAnim.setValue(0)  [after React commits
-  //                          the new card as "current", before native paints]
-  //   next grant           → pan reset is safe again (isDepartingAnim is 0,
-  //                          so the card isn't moving regardless of pan value)
-  //
-  const pan = useRef(new Animated.ValueXY()).current;
-  const isDepartingAnim = useRef(new Animated.Value(0)).current;
-  // Stable derived nodes — created once via useRef initialiser
-  const effectivePanX = useRef(Animated.multiply(isDepartingAnim, pan.x)).current;
-  const effectivePanY = useRef(Animated.multiply(isDepartingAnim, pan.y)).current;
-
-  // Signal for useLayoutEffect; set in the animation callback
-  const pendingDepartReset = useRef(false);
-
-  // Instantly zeroed when a swipe is committed so the departing card is
-  // invisible even if it ghosts back to position zero before the next card
-  // is committed by React. Restored to 1 in useLayoutEffect after commit.
-  const departingOpacity = useRef(new Animated.Value(1)).current;
-
-  // All visual interpolations derive from effectivePanX so they zero out
-  // automatically when isDepartingAnim=0
-  const rotateZ = effectivePanX.interpolate({
-    inputRange: [-W / 2, 0, W / 2],
-    outputRange: ['-10deg', '0deg', '10deg'],
-    extrapolate: 'clamp',
-  });
-  const deleteOpacity = effectivePanX.interpolate({
-    inputRange: [-W * 0.35, 0],
-    outputRange: [1, 0],
-    extrapolate: 'clamp',
-  });
-  const keepOpacity = effectivePanX.interpolate({
-    inputRange: [0, W * 0.35],
-    outputRange: [0, 1],
-    extrapolate: 'clamp',
-  });
-  const nextScale = effectivePanX.interpolate({
-    inputRange: [-W * 0.5, 0, W * 0.5],
-    outputRange: [1.0, 0.93, 1.0],
-    extrapolate: 'clamp',
-  });
-  const nextOpacity = effectivePanX.interpolate({
-    inputRange: [-W * 0.35, 0, W * 0.35],
-    outputRange: [1.0, 0.55, 1.0],
-    extrapolate: 'clamp',
-  });
-
-  const panResponder = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => !isAnimatingRef.current && !isPausedRef.current,
-      onMoveShouldSetPanResponder: () => !isAnimatingRef.current && !isPausedRef.current,
-      onPanResponderGrant: () => {
-        // Reset pan here — safe because isDepartingAnim is still 0 so the
-        // card hasn't moved yet (effectivePan = 0 * anything = 0).
-        pan.setValue({ x: 0, y: 0 });
-        isDepartingAnim.setValue(1); // now effectivePan tracks pan
-      },
-      onPanResponderMove: (_, g) => {
-        pan.setValue({ x: g.dx, y: g.dy * 0.15 });
-      },
-      onPanResponderRelease: (_, g) => {
-        if (Math.abs(g.dx) > SWIPE_THRESHOLD) {
-          const dir = g.dx > 0 ? 'keep' : 'delete';
-          const toX = g.dx > 0 ? W * 1.5 : -W * 1.5;
-          isAnimatingRef.current = true;
-          // Hide the departing card instantly on commit so any ghost frame
-          // (card snapping to position zero before the next card renders)
-          // is invisible. Restored to 1 in useLayoutEffect after commit.
-          departingOpacity.setValue(0);
-
-          Animated.timing(pan, {
-            toValue: { x: toX, y: g.dy * 0.15 },
-            duration: 220,
-            useNativeDriver: false,
-          }).start(({ finished }) => {
-            isAnimatingRef.current = false;
-
-            const prevIdx = indexRef.current;
-            if (dir === 'keep') keptRef.current++;
-            else deletedRef.current++;
-            indexRef.current++;
-
-            // Record decision immediately (before any navigation)
-            const newDecision: Decision = { asset: assetsRef.current[prevIdx], action: dir };
-            const newDecisions = [...decisionsRef.current, newDecision];
-            decisionsRef.current = newDecisions;
-            setDecisions(newDecisions);
-
-            // Check completion before the !finished guard so the last card
-            // always navigates even if the animation was interrupted
-            if (indexRef.current >= assetsRef.current.length) {
-              isDepartingAnim.setValue(0);
-              departingOpacity.setValue(1);
-              const deletedAssets = newDecisions
-                .filter(d => d.action === 'delete')
-                .map(d => ({ id: d.asset.id, uri: d.asset.uri, localUri: d.asset.localUri }));
-              navRef.current.replace('Summary', {
-                kept: keptRef.current,
-                deleted: deletedRef.current,
-                deletedAssets,
-              });
-              return;
-            }
-
-            if (!finished) {
-              isDepartingAnim.setValue(0);
-              departingOpacity.setValue(1);
-              return;
-            }
-
-            // Update snap (new card becomes React's "current").
-            // useLayoutEffect fires after commit and calls isDepartingAnim.setValue(0):
-            // the new card is already in the tree, effectivePan zeros out instantly,
-            // and the new card appears at position zero — pan never needs to reset.
-            setSnap({
-              index: indexRef.current,
-              kept: keptRef.current,
-              deleted: deletedRef.current,
-            });
-            pendingDepartReset.current = true;
-          });
-        } else {
-          // Not enough: spring back. isDepartingAnim stays 1 during the spring
-          // so the card remains animated. We zero it out after the spring lands.
-          Animated.spring(pan, {
-            toValue: { x: 0, y: 0 },
-            friction: 7,
-            tension: 80,
-            useNativeDriver: false,
-          }).start(({ finished }) => {
-            if (finished) isDepartingAnim.setValue(0);
-          });
-        }
-      },
-    })
-  ).current;
+  // ── Effects ────────────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (permission?.status === 'undetermined') requestPermission();
@@ -215,8 +209,6 @@ export default function SwipeScreen({ route, navigation }: Props) {
 
   useEffect(() => {
     if (testMode) {
-      // Build fake assets immediately — no I/O, no permission needed.
-      // Color is stored in `uri` so the existing rendering paths can use it.
       const fake = Array.from({ length: dailyLimit }, (_, i) => ({
         id: `test-${i}`,
         uri: PLACEHOLDER_COLORS[i % PLACEHOLDER_COLORS.length],
@@ -232,43 +224,55 @@ export default function SwipeScreen({ route, navigation }: Props) {
         mediaType: MediaLibrary.MediaType.photo,
         sortBy: [MediaLibrary.SortBy.creationTime],
       });
-      const resolved = await Promise.all(found.map((a) => MediaLibrary.getAssetInfoAsync(a)));
+      const resolved = await Promise.all(found.map(a => MediaLibrary.getAssetInfoAsync(a)));
       setAssets(resolved);
       setLoading(false);
     }
     loadPhotos();
   }, [testMode, permission?.status, dailyLimit]);
 
-  // Fires synchronously after React commits the new card as "current" (snap.index
-  // changed). isDepartingAnim.setValue(0) zeros effectivePan immediately — the new
-  // card's transforms collapse to zero so it appears at position zero with no flash.
-  // pan.x is still at W*1.5 but is masked until the next gesture resets it.
-  useLayoutEffect(() => {
-    if (pendingDepartReset.current) {
-      pendingDepartReset.current = false;
-      isDepartingAnim.setValue(0);
-      departingOpacity.setValue(1);
-    }
-  }, [snap.index]);
-
-  // Prefetch the next 3 photos whenever the index advances so they are decoded
-  // and ready before they become the front card. Skip in test mode — fake assets
-  // are in-memory colors with no I/O to prefetch.
+  // Prefetch starting two cards ahead. The next card is already decoded
+  // naturally by being mounted as the static bottom card.
   useEffect(() => {
     if (testMode || assets.length === 0) return;
-    for (let i = snap.index + 1; i <= snap.index + 3; i++) {
+    for (let i = session.topIndex + 2; i <= session.topIndex + 3; i++) {
       if (i >= assets.length) break;
       const uri = assets[i].localUri ?? assets[i].uri;
       if (uri) Image.prefetch(uri).catch(() => {});
     }
-  }, [testMode, snap.index, assets.length]);
+  }, [testMode, session.topIndex, assets.length]);
 
-  // --- Handlers ---
+  // ── Handlers ──────────────────────────────────────────────────────────────
 
-  const handlePause = () => {
-    if (!isAnimatingRef.current) setIsPaused(true);
+  const handleSwipeComplete = (dir: 'keep' | 'delete') => {
+    const prevIdx = indexRef.current;
+    if (dir === 'keep') keptRef.current++;
+    else deletedRef.current++;
+    indexRef.current++;
+
+    const newDecision: Decision = { asset: assetsRef.current[prevIdx], action: dir };
+    const newDecisions = [...decisionsRef.current, newDecision];
+    decisionsRef.current = newDecisions;
+
+    if (indexRef.current >= assetsRef.current.length) {
+      const deletedAssets = newDecisions
+        .filter(d => d.action === 'delete')
+        .map(d => ({ id: d.asset.id, uri: d.asset.uri, localUri: d.asset.localUri }));
+      navRef.current.replace('Summary', {
+        kept: keptRef.current,
+        deleted: deletedRef.current,
+        deletedAssets,
+      });
+      return;
+    }
+
+    setDecisions(newDecisions);
+    setSession({ topIndex: indexRef.current, kept: keptRef.current, deleted: deletedRef.current });
   };
+
+  const handlePause = () => setIsPaused(true);
   const handleContinue = () => setIsPaused(false);
+
   const handleEndSession = () => {
     const deletedAssets = decisionsRef.current
       .filter(d => d.action === 'delete')
@@ -279,6 +283,7 @@ export default function SwipeScreen({ route, navigation }: Props) {
       deletedAssets,
     });
   };
+
   const handleUndo = (idx: number) => {
     const updated = decisions.map((d, i) =>
       i !== idx ? d : { ...d, action: (d.action === 'keep' ? 'delete' : 'keep') as 'keep' | 'delete' }
@@ -289,30 +294,24 @@ export default function SwipeScreen({ route, navigation }: Props) {
     keptRef.current = newKept;
     deletedRef.current = newDeleted;
     setDecisions(updated);
-    setSnap(prev => ({ ...prev, kept: newKept, deleted: newDeleted }));
+    setSession(prev => ({ ...prev, kept: newKept, deleted: newDeleted }));
   };
 
-  // Resets the session and reloads assets in the opposite mode.
-  // Triggered by long-pressing ⋯.
   const handleToggleTestMode = () => {
     const next = !testMode;
     indexRef.current = 0;
     keptRef.current = 0;
     deletedRef.current = 0;
     decisionsRef.current = [];
-    isAnimatingRef.current = false;
-    isDepartingAnim.setValue(0);
-    departingOpacity.setValue(1);
-    pan.setValue({ x: 0, y: 0 });
     setDecisions([]);
-    setSnap({ index: 0, kept: 0, deleted: 0 });
+    setSession({ topIndex: 0, kept: 0, deleted: 0 });
     setIsPaused(false);
     setAssets([]);
     setLoading(true);
     setTestMode(next);
   };
 
-  // --- Permission / loading gates ---
+  // ── Loading / permission gates ─────────────────────────────────────────────
 
   if (loading) {
     return (
@@ -353,13 +352,13 @@ export default function SwipeScreen({ route, navigation }: Props) {
     );
   }
 
-  const { index, kept, deleted } = snap;
-  const current = assets[index];
-  const next = assets[index + 1];
-  const progressPct = ((index + 1) / assets.length) * 100;
-  const remaining = assets.length - index;
+  const { topIndex, kept, deleted } = session;
+  const currentAsset = assets[topIndex];
+  const nextAsset = assets[topIndex + 1];
+  const progressPct = ((topIndex + 1) / assets.length) * 100;
+  const remaining = assets.length - topIndex;
 
-  if (!current) return null;
+  if (!currentAsset) return null;
 
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
@@ -372,7 +371,7 @@ export default function SwipeScreen({ route, navigation }: Props) {
           </View>
           <View style={styles.progressCenter}>
             {testMode && <Text style={styles.testBadge}>TEST</Text>}
-            <Text style={styles.progressLabel}>{index + 1} / {assets.length}</Text>
+            <Text style={styles.progressLabel}>{topIndex + 1} / {assets.length}</Text>
           </View>
           <View style={styles.rightGroup}>
             <View style={styles.chip}>
@@ -394,56 +393,24 @@ export default function SwipeScreen({ route, navigation }: Props) {
         </View>
       </View>
 
-      {/* ── Cards ── */}
+      {/* ── Card stack ── */}
       <View style={styles.cardArea}>
-        {/* Back card: next photo, always at position zero.
-            Scale/opacity still animate while the current card departs
-            because nextScale/nextOpacity derive from effectivePanX. */}
-        {next && (
-          <Animated.View
-            style={[
-              StyleSheet.absoluteFill,
-              styles.card,
-              { opacity: nextOpacity, transform: [{ scale: nextScale }] },
-            ]}
-          >
-            {testMode
-              ? <View style={[StyleSheet.absoluteFill, { backgroundColor: next.uri }]} />
-              : <Image source={{ uri: next.localUri ?? next.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-            }
-          </Animated.View>
+        {/* Bottom card — stable key so it never unmounts on swap. Its displayed
+            image lags one rAF so the transition frame shows identical content
+            to the incoming SwipeCard, which loads the same URI from cache. */}
+        {nextAsset && (
+          <BottomCard key="bottom-card" asset={nextAsset} testMode={testMode} />
         )}
 
-        {/* Front card: current photo.
-            departingOpacity is zeroed on swipe commit so any ghost frame
-            (card returning to position zero before React commits the next
-            card) is invisible. Restored to 1 in useLayoutEffect. */}
-        <Animated.View
-          style={[
-            StyleSheet.absoluteFill,
-            styles.card,
-            {
-              opacity: departingOpacity,
-              transform: [
-                { translateX: effectivePanX },
-                { translateY: effectivePanY },
-                { rotate: rotateZ },
-              ],
-            },
-          ]}
-          {...panResponder.panHandlers}
-        >
-          {testMode
-            ? <View style={[StyleSheet.absoluteFill, { backgroundColor: current.uri }]} />
-            : <Image source={{ uri: current.localUri ?? current.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-          }
-          <Animated.View style={[StyleSheet.absoluteFill, styles.deleteOverlay, { opacity: deleteOpacity }]}>
-            <Ionicons name="trash" size={68} color="rgba(255,75,75,0.95)" />
-          </Animated.View>
-          <Animated.View style={[StyleSheet.absoluteFill, styles.keepOverlay, { opacity: keepOpacity }]}>
-            <Ionicons name="checkmark-circle" size={68} color="rgba(50,210,105,0.95)" />
-          </Animated.View>
-        </Animated.View>
+        {/* Top card — fresh instance per photo (key = topIndex).
+            Goes to opacity 0 on commit, flies off screen, then unmounts. */}
+        <SwipeCard
+          key={topIndex}
+          asset={currentAsset}
+          testMode={testMode}
+          isPausedRef={isPausedRef}
+          onSwipeComplete={handleSwipeComplete}
+        />
       </View>
 
       {/* ── Pause overlay ── */}
@@ -528,13 +495,7 @@ const styles = StyleSheet.create({
   chipText: { color: 'rgba(255,255,255,0.4)', fontSize: 14, fontWeight: '600' },
   progressCenter: { alignItems: 'center', gap: 2 },
   progressLabel: { color: 'rgba(255,255,255,0.7)', fontSize: 15, fontWeight: '600' },
-  testBadge: {
-    color: '#FFD60A',
-    fontSize: 9,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-  },
+  testBadge: { color: '#FFD60A', fontSize: 9, fontWeight: '700', letterSpacing: 1.2, textTransform: 'uppercase' },
   track: { height: 2, backgroundColor: 'rgba(255,255,255,0.08)', borderRadius: 1 },
   fill: { height: 2, backgroundColor: 'rgba(255,255,255,0.6)', borderRadius: 1 },
   cardArea: { flex: 1, margin: 20, marginTop: 12, marginBottom: 40 },
@@ -548,13 +509,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 28,
   },
-  pauseCard: {
-    width: '100%',
-    backgroundColor: '#1c1c1e',
-    borderRadius: 24,
-    padding: 28,
-    gap: 20,
-  },
+  pauseCard: { width: '100%', backgroundColor: '#1c1c1e', borderRadius: 24, padding: 28, gap: 20 },
   pauseTitle: { color: '#ffffff', fontSize: 20, fontWeight: '700', textAlign: 'center', letterSpacing: -0.3 },
   pauseStats: { gap: 12 },
   pauseStatRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },

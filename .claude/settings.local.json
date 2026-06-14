@@ -7,7 +7,12 @@
       "Bash(node *)",
       "Bash(git init *)",
       "Bash(git add *)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "WebFetch(domain:docs.expo.dev)",
+      "Bash(eas --version)",
+      "Bash(pod --version)",
+      "Bash(xcodebuild -version)",
+      "Bash(gem list *)"
     ]
   }
 }
