@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -41,7 +41,12 @@ function BottomCard({ asset, testMode }: BottomCardProps) {
   const [displayAsset, setDisplayAsset] = useState(asset);
 
   useEffect(() => {
-    const raf = requestAnimationFrame(() => setDisplayAsset(asset));
+    const t0 = performance.now();
+    console.log(`[SWIPE] BottomCard useEffect — asset.id changed to ${asset.id} at ${t0.toFixed(2)}`);
+    const raf = requestAnimationFrame((rafT) => {
+      console.log(`[SWIPE] BottomCard rAF fired — displayAsset updating at ${rafT.toFixed(2)} (+${(rafT - t0).toFixed(2)}ms since effect)`);
+      setDisplayAsset(asset);
+    });
     return () => cancelAnimationFrame(raf);
   }, [asset.id]);
 
@@ -80,10 +85,25 @@ function SwipeCard({ asset, testMode, isPausedRef, onSwipeComplete }: SwipeCardP
   const pan = useRef(new Animated.ValueXY()).current;
   const departingOpacity = useRef(new Animated.Value(1)).current;
   const isAnimatingRef = useRef(false);
+  const mountTimeRef = useRef(performance.now());
 
   // Ref so the PanResponder closure never captures a stale callback.
   const onCompleteRef = useRef(onSwipeComplete);
   onCompleteRef.current = onSwipeComplete;
+
+  useLayoutEffect(() => {
+    console.log(`[SWIPE] SwipeCard MOUNT useLayoutEffect  asset=${asset.id} at ${performance.now().toFixed(2)}`);
+    return () => {
+      console.log(`[SWIPE] SwipeCard UNMOUNT useLayoutEffect cleanup asset=${asset.id} at ${performance.now().toFixed(2)}`);
+    };
+  }, []);
+
+  useEffect(() => {
+    console.log(`[SWIPE] SwipeCard MOUNT useEffect  asset=${asset.id} at ${performance.now().toFixed(2)} (+${(performance.now() - mountTimeRef.current).toFixed(2)}ms since layoutEffect)`);
+    return () => {
+      console.log(`[SWIPE] SwipeCard UNMOUNT useEffect cleanup  asset=${asset.id} at ${performance.now().toFixed(2)}`);
+    };
+  }, []);
 
   const rotateZ = pan.x.interpolate({
     inputRange: [-W / 2, 0, W / 2],
@@ -113,6 +133,8 @@ function SwipeCard({ asset, testMode, isPausedRef, onSwipeComplete }: SwipeCardP
           const dir: 'keep' | 'delete' = g.dx > 0 ? 'keep' : 'delete';
           const toX = g.dx > 0 ? W * 1.5 : -W * 1.5;
           isAnimatingRef.current = true;
+          const t0 = performance.now();
+          console.log(`[SWIPE] onSwipeCommit — opacity zeroed, fly-out starting at ${t0.toFixed(2)}`);
           departingOpacity.setValue(0);
 
           Animated.timing(pan, {
@@ -121,6 +143,8 @@ function SwipeCard({ asset, testMode, isPausedRef, onSwipeComplete }: SwipeCardP
             useNativeDriver: false,
           }).start(({ finished }) => {
             if (finished) {
+              const t1 = performance.now();
+              console.log(`[SWIPE] fly-out animation complete at ${t1.toFixed(2)} (+${(t1 - t0).toFixed(2)}ms since commit)`);
               // Card is now off-screen. Signal the parent; it will increment
               // topIndex which unmounts this component at its current position.
               // pan is intentionally NOT reset — there is no position zero to
@@ -162,7 +186,12 @@ function SwipeCard({ asset, testMode, isPausedRef, onSwipeComplete }: SwipeCardP
     >
       {testMode
         ? <View style={[StyleSheet.absoluteFill, { backgroundColor: asset.uri }]} />
-        : <Image source={{ uri: asset.localUri ?? asset.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        : <Image
+            source={{ uri: asset.localUri ?? asset.uri }}
+            style={StyleSheet.absoluteFill}
+            resizeMode="cover"
+            onLoad={() => console.log(`[SWIPE] SwipeCard Image onLoad  asset=${asset.id} at ${performance.now().toFixed(2)}`)}
+          />
       }
       <Animated.View style={[StyleSheet.absoluteFill, styles.deleteOverlay, { opacity: deleteOpacity }]}>
         <Ionicons name="trash" size={68} color="rgba(255,75,75,0.95)" />
@@ -245,6 +274,8 @@ export default function SwipeScreen({ route, navigation }: Props) {
   // ── Handlers ──────────────────────────────────────────────────────────────
 
   const handleSwipeComplete = (dir: 'keep' | 'delete') => {
+    const t2 = performance.now();
+    console.log(`[SWIPE] handleSwipeComplete called at ${t2.toFixed(2)}`);
     const prevIdx = indexRef.current;
     if (dir === 'keep') keptRef.current++;
     else deletedRef.current++;
@@ -267,6 +298,8 @@ export default function SwipeScreen({ route, navigation }: Props) {
     }
 
     setDecisions(newDecisions);
+    const t3 = performance.now();
+    console.log(`[SWIPE] setSession called (React re-render enqueued) at ${t3.toFixed(2)} (+${(t3 - t2).toFixed(2)}ms since handler entry)`);
     setSession({ topIndex: indexRef.current, kept: keptRef.current, deleted: deletedRef.current });
   };
 
