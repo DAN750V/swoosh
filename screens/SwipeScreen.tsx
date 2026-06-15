@@ -260,16 +260,9 @@ export default function SwipeScreen({ route, navigation }: Props) {
     loadPhotos();
   }, [testMode, permission?.status, dailyLimit]);
 
-  // Prefetch starting two cards ahead. The next card is already decoded
-  // naturally by being mounted as the static bottom card.
-  useEffect(() => {
-    if (testMode || assets.length === 0) return;
-    for (let i = session.topIndex + 2; i <= session.topIndex + 3; i++) {
-      if (i >= assets.length) break;
-      const uri = assets[i].localUri ?? assets[i].uri;
-      if (uri) Image.prefetch(uri).catch(() => {});
-    }
-  }, [testMode, session.topIndex, assets.length]);
+  // Pre-decode is handled by the persistent render layer in JSX below.
+  // Image.prefetch only fetches compressed bytes; rendering at card resolution
+  // ensures the bitmap is fully decoded before a card becomes the top card.
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -428,6 +421,27 @@ export default function SwipeScreen({ route, navigation }: Props) {
 
       {/* ── Card stack ── */}
       <View style={styles.cardArea}>
+        {/* Pre-decode cache — renders upcoming images at card resolution with
+            stable asset.id keys so the same Image component persists across
+            topIndex changes. opacity 0.001 forces native layer decode without
+            being visible. Sits behind BottomCard and SwipeCard in z-order. */}
+        {!testMode && (
+          <View style={StyleSheet.absoluteFill} pointerEvents="none">
+            {[topIndex + 1, topIndex + 2, topIndex + 3].map(i => {
+              if (i >= assets.length) return null;
+              const a = assets[i];
+              return (
+                <Image
+                  key={a.id}
+                  source={{ uri: a.localUri ?? a.uri }}
+                  style={[StyleSheet.absoluteFill, { opacity: 0.001 }]}
+                  resizeMode="cover"
+                />
+              );
+            })}
+          </View>
+        )}
+
         {/* Bottom card — stable key so it never unmounts on swap. Its displayed
             image lags one rAF so the transition frame shows identical content
             to the incoming SwipeCard, which loads the same URI from cache. */}
