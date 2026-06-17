@@ -1,8 +1,10 @@
+import { useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../App';
+import { recordSession } from '../lib/streak';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Summary'>;
 
@@ -10,6 +12,13 @@ export default function SummaryScreen({ route, navigation }: Props) {
   const { kept, deleted, deletedAssets } = route.params;
   const total = kept + deleted;
   const insets = useSafeAreaInsets();
+
+  const [streakCount, setStreakCount] = useState<number | null>(null);
+
+  // Record the completed session exactly once when this screen mounts.
+  useEffect(() => {
+    recordSession().then(d => setStreakCount(d.count));
+  }, []);
 
   return (
     <View style={[styles.root, { paddingTop: insets.top, paddingBottom: insets.bottom + 16 }]}>
@@ -53,6 +62,21 @@ export default function SummaryScreen({ route, navigation }: Props) {
               Review deletions
             </Text>
           </Pressable>
+
+          {/* Streak entry point — shown once recordSession resolves */}
+          <Pressable
+            style={({ pressed }) => [styles.streakBtn, pressed && { opacity: 0.55 }]}
+            disabled={streakCount === null}
+            onPress={() => navigation.navigate('Streak')}
+          >
+            <Text style={styles.streakBtnText}>
+              {streakCount !== null ? `${streakCount} day streak` : ''}
+            </Text>
+            {streakCount !== null && (
+              <Ionicons name="chevron-forward" size={14} color="rgba(255,255,255,0.25)" />
+            )}
+          </Pressable>
+
           <Pressable
             style={({ pressed }) => [styles.ghostBtn, pressed && { opacity: 0.5 }]}
             onPress={() => navigation.navigate('Onboarding')}
@@ -150,6 +174,18 @@ const styles = StyleSheet.create({
   },
   primaryBtnTextDisabled: {
     color: 'rgba(255,255,255,0.3)',
+  },
+  streakBtn: {
+    height: 44,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+  },
+  streakBtnText: {
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: 15,
+    fontWeight: '500',
   },
   ghostBtn: {
     height: 56,

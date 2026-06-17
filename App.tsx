@@ -7,6 +7,7 @@ import OnboardingScreen from './screens/OnboardingScreen';
 import SwipeScreen from './screens/SwipeScreen';
 import SummaryScreen from './screens/SummaryScreen';
 import DeletionReviewScreen from './screens/DeletionReviewScreen';
+import StreakScreen from './screens/StreakScreen';
 
 export type AssetParam = { id: string; uri: string; localUri?: string };
 
@@ -15,6 +16,7 @@ export type RootStackParamList = {
   Swipe: { dailyLimit: number };
   Summary: { kept: number; deleted: number; deletedAssets: AssetParam[] };
   DeletionReview: { assets: AssetParam[] };
+  Streak: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -44,6 +46,11 @@ export default function App() {
             <Stack.Screen
               name="DeletionReview"
               component={DeletionReviewScreen}
+            />
+            <Stack.Screen
+              name="Streak"
+              component={StreakScreen}
+              options={{ animation: 'slide_from_right' }}
             />
           </Stack.Navigator>
         </NavigationContainer>
