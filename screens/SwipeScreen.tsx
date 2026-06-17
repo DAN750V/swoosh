@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   Animated,
   Dimensions,
-  Image,
   PanResponder,
   Pressable,
   ScrollView,
@@ -11,6 +10,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as MediaLibrary from 'expo-media-library';
@@ -54,7 +54,12 @@ function BottomCard({ asset, testMode }: BottomCardProps) {
     <View style={[StyleSheet.absoluteFill, styles.card]}>
       {testMode
         ? <View style={[StyleSheet.absoluteFill, { backgroundColor: displayAsset.uri }]} />
-        : <Image source={{ uri: displayAsset.localUri ?? displayAsset.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        : <Image
+            source={{ uri: displayAsset.localUri ?? displayAsset.uri }}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+          />
       }
     </View>
   );
@@ -71,6 +76,12 @@ function BottomCard({ asset, testMode }: BottomCardProps) {
 //
 // The departing card is never repositioned to zero — it ceases to exist at
 // its off-screen location, making ghost frames structurally impossible.
+//
+// Image loading: expo-image caches decoded bitmaps in memory. The pre-decode
+// layer (opacity 0.001 Images below BottomCard) warms this cache for upcoming
+// cards. On a cache hit the image appears instantly; on a cold cache expo-image
+// shows asset.uri (ph:// thumbnail from the Photos framework) as a placeholder
+// and cross-dissolves to the full-res file when ready.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -188,8 +199,16 @@ function SwipeCard({ asset, testMode, isPausedRef, onSwipeComplete }: SwipeCardP
         ? <View style={[StyleSheet.absoluteFill, { backgroundColor: asset.uri }]} />
         : <Image
             source={{ uri: asset.localUri ?? asset.uri }}
+            // asset.uri is the ph:// Photos-framework URI; iOS delivers a
+            // thumbnail from it immediately, so the user sees the actual photo
+            // blurred/low-res rather than a black frame during the decode gap.
+            placeholder={{ uri: asset.uri }}
+            placeholderContentFit="cover"
+            // Cross-dissolve from placeholder to full-res once decoded.
+            transition={200}
+            contentFit="cover"
+            cachePolicy="memory-disk"
             style={StyleSheet.absoluteFill}
-            resizeMode="cover"
             onLoad={() => console.log(`[SWIPE] SwipeCard Image onLoad  asset=${asset.id} at ${performance.now().toFixed(2)}`)}
           />
       }
@@ -259,10 +278,6 @@ export default function SwipeScreen({ route, navigation }: Props) {
     }
     loadPhotos();
   }, [testMode, permission?.status, dailyLimit]);
-
-  // Pre-decode is handled by the persistent render layer in JSX below.
-  // Image.prefetch only fetches compressed bytes; rendering at card resolution
-  // ensures the bitmap is fully decoded before a card becomes the top card.
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -422,9 +437,10 @@ export default function SwipeScreen({ route, navigation }: Props) {
       {/* ── Card stack ── */}
       <View style={styles.cardArea}>
         {/* Pre-decode cache — renders upcoming images at card resolution with
-            stable asset.id keys so the same Image component persists across
-            topIndex changes. opacity 0.001 forces native layer decode without
-            being visible. Sits behind BottomCard and SwipeCard in z-order. */}
+            stable asset.id keys so the same expo-image component persists across
+            topIndex changes. expo-image's memory cache stores the decoded bitmap
+            so the SwipeCard gets an instant cache hit when it mounts.
+            opacity 0.001 keeps them invisible but still forces native decoding. */}
         {!testMode && (
           <View style={StyleSheet.absoluteFill} pointerEvents="none">
             {[topIndex + 1, topIndex + 2, topIndex + 3].map(i => {
@@ -435,7 +451,9 @@ export default function SwipeScreen({ route, navigation }: Props) {
                   key={a.id}
                   source={{ uri: a.localUri ?? a.uri }}
                   style={[StyleSheet.absoluteFill, { opacity: 0.001 }]}
-                  resizeMode="cover"
+                  contentFit="cover"
+                  cachePolicy="memory"
+                  priority="high"
                 />
               );
             })}
@@ -501,7 +519,12 @@ export default function SwipeScreen({ route, navigation }: Props) {
                       >
                         {testMode
                           ? <View style={[StyleSheet.absoluteFill, { backgroundColor: d.asset.uri }]} />
-                          : <Image source={{ uri: d.asset.localUri ?? d.asset.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+                          : <Image
+                              source={{ uri: d.asset.localUri ?? d.asset.uri }}
+                              style={StyleSheet.absoluteFill}
+                              contentFit="cover"
+                              cachePolicy="memory-disk"
+                            />
                         }
                       </Pressable>
                     ))}
